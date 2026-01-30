@@ -1,149 +1,53 @@
-import express from "express";
-import axios from "axios";
-import dotenv from "dotenv";
+name: Azure AI Code Review
 
-dotenv.config();
+on:
+  pull_request:
+    types: [opened, synchronize]
 
-const app = express();
-app.use(express.json());
+permissions:
+  contents: read
+  pull-requests: write
 
-// =========================
-// ENV VARIABLES (REQUIRED)
-// =========================
-const {
-  AZURE_ENDPOINT,       // https://xxxx.cognitiveservices.azure.com
-  AZURE_API_KEY,        // Azure OpenAI Key
-  AZURE_DEPLOYMENT,     // Deployment name (NOT model name)
-  AZURE_API_VERSION,    // e.g. 2024-12-01-preview
-  PORT = 3000
-} = process.env;
+jobs:
+  ai_review:
+    runs-on: ubuntu-latest
 
-if (!AZURE_ENDPOINT || !AZURE_API_KEY || !AZURE_DEPLOYMENT || !AZURE_API_VERSION) {
-  console.error("❌ Missing required Azure OpenAI environment variables");
-  process.exit(1);
-}
+    steps:
+      # 1️⃣ Checkout full repo history (required for diff)
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-// =========================
-// HELPERS
-// =========================
-function azureChatUrl() {
-  return `${AZURE_ENDPOINT}/openai/deployments/${AZURE_DEPLOYMENT}/chat/completions?api-version=${AZURE_API_VERSION}`;
-}
+      # 2️⃣ Generate PR diff
+      - name: Generate PR diff
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          git diff origin/${{ github.base_ref }}...HEAD > diff.txt
 
-// =========================
-// 1️⃣ OpenAI-Compatible Proxy
-// =========================
-app.post("/v1/chat/completions", async (req, res) => {
-  try {
-    const response = await axios.post(
-      azureChatUrl(),
-      {
-        messages: req.body.messages,
-        temperature: req.body.temperature ?? 0.1,
-        max_tokens: req.body.max_tokens ?? 800
-      },
-      {
-        headers: {
-          "api-key": AZURE_API_KEY,
-          "Content-Type": "application/json"
-        }
-      }
-    );
+      # 3️⃣ Send diff to Azure OpenAI reviewer (your proxy)
+      - name: Send diff to Azure AI
+        id: ai
+        run: |
+          RESPONSE=$(curl -s -X POST https://coderabbit-production.up.railway.app/review \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg diff "$(cat diff.txt)" '{diff: $diff}')")
 
-    res.json(response.data);
-  } catch (err) {
-    console.error("Azure OpenAI error:", err.response?.data || err.message);
-    res.status(500).json({
-      error: "Azure OpenAI error",
-      details: err.response?.data || err.message
-    });
-  }
-});
+          echo "$RESPONSE" > response.json
 
-// =========================
-// 2️⃣ Code Review Endpoint
-// =========================
-app.post("/review", async (req, res) => {
-  try {
-    const {
-      repo,        // owner/repo
-      pr_number,   // PR number
-      diff_url,    // GitHub diff URL
-      github_token // GitHub token
-    } = req.body;
+      # 4️⃣ Post AI review as PR comment
+      - name: Comment on PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BODY=$(cat response.json | jq -r '.review // .choices[0].message.content')
 
-    if (!repo || !pr_number || !diff_url || !github_token) {
-      return res.status(400).json({
-        error: "repo, pr_number, diff_url, github_token are required"
-      });
-    }
+          if [ -z "$BODY" ] || [ "$BODY" = "null" ]; then
+            BODY="⚠️ AI review failed or returned empty response."
+          fi
 
-    // ---- Fetch PR diff ----
-    const diffResponse = await axios.get(diff_url, {
-      headers: {
-        Authorization: `Bearer ${github_token}`,
-        Accept: "application/vnd.github.v3.diff"
-      }
-    });
-
-    const diff = diffResponse.data;
-
-    // ---- Build prompt ----
-    const messages = [
-      {
-        role: "system",
-        content:
-          "You are a senior software engineer. Perform a strict, production-grade code review."
-      },
-      {
-        role: "user",
-        content: `Review the following GitHub Pull Request diff:\n\n${diff}`
-      }
-    ];
-
-    // ---- Call Azure OpenAI ----
-    const aiResponse = await axios.post(
-      azureChatUrl(),
-      {
-        messages,
-        temperature: 0.1,
-        max_tokens: 900
-      },
-      {
-        headers: {
-          "api-key": AZURE_API_KEY,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    const reviewText = aiResponse.data.choices[0].message.content;
-
-    // ---- Post comment to PR ----
-    await axios.post(
-      `https://api.github.com/repos/${repo}/issues/${pr_number}/comments`,
-      { body: reviewText },
-      {
-        headers: {
-          Authorization: `Bearer ${github_token}`,
-          Accept: "application/vnd.github.v3+json"
-        }
-      }
-    );
-
-    res.json({ status: "review_posted" });
-  } catch (err) {
-    console.error("Review error:", err.response?.data || err.message);
-    res.status(500).json({
-      error: "Review failed",
-      details: err.response?.data || err.message
-    });
-  }
-});
-
-// =========================
-// START SERVER
-// =========================
-app.listen(PORT, () => {
-  console.log(`✅ Azure OpenAI proxy running on http://localhost:${PORT}`);
-});
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
+            -d "$(jq -n --arg body "$BODY" '{body: $body}')"
