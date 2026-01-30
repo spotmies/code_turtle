@@ -1,142 +1,91 @@
 import express from "express";
-import fetch from "node-fetch";
+import axios from "axios";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const app = express();
-app.use(express.json({ limit: "5mb" }));
-
-/**
- * REQUIRED ENV VARIABLES (Railway / Server)
- *
- * AZURE_OPENAI_ENDPOINT=https://xxxx.cognitiveservices.azure.com
- * AZURE_OPENAI_KEY=xxxxxxxx
- * AZURE_OPENAI_DEPLOYMENT=gpt-4o
- * AZURE_OPENAI_API_VERSION=2024-12-01-preview
- */
+app.use(express.json());
 
 const {
-  AZURE_OPENAI_ENDPOINT,
-  AZURE_OPENAI_KEY,
-  AZURE_OPENAI_DEPLOYMENT,
-  AZURE_OPENAI_API_VERSION,
+  AZURE_ENDPOINT,
+  AZURE_API_KEY,
+  AZURE_DEPLOYMENT,
+  AZURE_API_VERSION,
+  PORT = 3000
 } = process.env;
 
-if (
-  !AZURE_OPENAI_ENDPOINT ||
-  !AZURE_OPENAI_KEY ||
-  !AZURE_OPENAI_DEPLOYMENT ||
-  !AZURE_OPENAI_API_VERSION
-) {
-  console.error("❌ Missing Azure OpenAI environment variables");
-  process.exit(1);
-}
+// Health check
+app.get("/", (_, res) => {
+  res.send("Azure AI Code Reviewer is running");
+});
 
-/**
- * Helper: call Azure OpenAI Chat Completion
- */
-async function callAzure(messages, temperature = 0.05) {
-  const url =
-    `${AZURE_OPENAI_ENDPOINT}/openai/deployments/${AZURE_OPENAI_DEPLOYMENT}` +
-    `/chat/completions?api-version=${AZURE_OPENAI_API_VERSION}`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "api-key": AZURE_OPENAI_KEY,
-    },
-    body: JSON.stringify({
-      messages,
-      temperature,
-    }),
-  });
-
-  const data = await res.json();
-
-  if (!res.ok) {
-    throw data;
-  }
-
-  return data.choices[0].message.content;
-}
-
-/**
- * OPENAI-COMPATIBLE ENDPOINT
- * POST /v1/chat/completions
- */
+// OpenAI-compatible endpoint
 app.post("/v1/chat/completions", async (req, res) => {
   try {
-    const { messages, temperature } = req.body;
+    const url = `${AZURE_ENDPOINT}/openai/deployments/${AZURE_DEPLOYMENT}/chat/completions?api-version=${AZURE_API_VERSION}`;
 
-    if (!messages) {
-      return res.status(400).json({ error: "messages required" });
-    }
-
-    const output = await callAzure(messages, temperature);
-
-    res.json({
-      id: "chatcmpl-proxy",
-      object: "chat.completion",
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content: output,
-          },
-        },
-      ],
+    const response = await axios.post(url, req.body, {
+      headers: {
+        "api-key": AZURE_API_KEY,
+        "Content-Type": "application/json"
+      }
     });
+
+    res.json(response.data);
   } catch (err) {
+    console.error("Azure error:", err.response?.data || err.message);
     res.status(500).json({
       error: "Azure OpenAI error",
-      details: err,
+      details: err.response?.data || err.message
     });
   }
 });
 
-/**
- * CODE REVIEW ENDPOINT (GitHub Actions)
- * POST /review
- */
+// Review endpoint (used by GitHub Actions)
 app.post("/review", async (req, res) => {
+  const { diff } = req.body;
+
+  if (!diff) {
+    return res.status(400).json({ error: "diff is required" });
+  }
+
   try {
-    const { diff } = req.body;
+    const url = `${AZURE_ENDPOINT}/openai/deployments/${AZURE_DEPLOYMENT}/chat/completions?api-version=${AZURE_API_VERSION}`;
 
-    if (!diff) {
-      return res.status(400).json({ error: "diff required" });
-    }
-
-    const messages = [
+    const response = await axios.post(
+      url,
       {
-        role: "system",
-        content:
-          "You are a senior software engineer. Perform a strict production-grade code review.",
+        messages: [
+          {
+            role: "system",
+            content: "You are a senior software engineer performing a strict code review."
+          },
+          {
+            role: "user",
+            content: `Review the following diff:\n\n${diff}`
+          }
+        ],
+        temperature: 0.1
       },
       {
-        role: "user",
-        content: `Review the following git diff and give clear, actionable feedback:\n\n${diff}`,
-      },
-    ];
+        headers: {
+          "api-key": AZURE_API_KEY,
+          "Content-Type": "application/json"
+        }
+      }
+    );
 
-    const review = await callAzure(messages);
-
-    res.json({ review });
+    res.json(response.data);
   } catch (err) {
+    console.error("Azure review error:", err.response?.data || err.message);
     res.status(500).json({
       error: "Azure OpenAI error",
-      details: err,
+      details: err.response?.data || err.message
     });
   }
 });
 
-/**
- * Health check
- */
-app.get("/", (_, res) => {
-  res.send("✅ Azure OpenAI Code Reviewer running");
-});
-
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Azure OpenAI proxy running on http://localhost:${PORT}`);
 });
