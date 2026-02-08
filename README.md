@@ -88,10 +88,18 @@ Content-Type: application/json
 
 ### 1. Add the Workflow to Your Repository
 
-To enable Code Turtle on a repository, creating a new file at `.github/workflows/code-turtle.yml` with the following content:
+To enable Code Turtle on a repository, copy the workflow file to your target repository:
+
+1.  Download or copy the workflow file from this repository:
+    **[`.github/workflows/codeturtle.yml`](.github/workflows/codeturtle.yml)**
+
+2.  Place it in your target repository at `.github/workflows/codeturtle.yml`
+
+<details>
+<summary>📄 Click to view the workflow file contents</summary>
 
 ```yaml
-name: Azure AI Code Review
+name: Code Turtle AI Review
 
 on:
   pull_request_target:
@@ -122,98 +130,50 @@ jobs:
         run: |
           BASE_SHA=${{ github.event.pull_request.base.sha }}
           git diff "$BASE_SHA"...pr-head > diff.txt
-          # Optional: log line count
           wc -l diff.txt
 
       - name: Chunk diff
         run: |
           mkdir -p chunks
-          # Split into smaller chunks (adjust line count as needed)
           split -l 400 diff.txt chunks/diff_
 
-      - name: Code Turtle Review
+      - name: Send chunks to Code Turtle
         env:
-          # Your deployed Code Turtle instance URL
-          # Use a secret for the full URL or just the domain
-          API_URL: ${{ secrets.CODE_TURTLE_URL }} 
+          API_URL: ${{ secrets.CODE_TURTLE_URL }}/review
         run: |
-          # 1. Prepare the System Prompt
+          # Create prompt file
           cat <<'PROMPT' > prompt.txt
-          You are a senior software engineer acting as an automated code reviewer
-          similar to CodeRabbit.
-
-          Your goal:
-          - Help developers improve code quality
-          - Be precise, constructive, and actionable
-          - Avoid unnecessary criticism
-
-          Review rules:
-          - Focus on bugs, security, performance, and maintainability
-          - Ignore formatting-only or whitespace-only changes
-          - Suggest fixes or alternatives, not just problems
-
-          Output format:
-          ## 🤖 Code Turtle Review
-          ### 📌 Summary
-          - Short bullet summary
-          ---
-          ### 💬 Inline Comments
-          - **File**: line number - comment
-          ---
-          ### ⚠️ High-Risk Issues
-          - Security/Performance issues
+          You are a senior software engineer performing a strict code review.
+          Focus on bugs, security, performance, and maintainability.
+          Output valid GitHub-flavored Markdown.
           PROMPT
 
-          echo "## 🤖 Code Turtle Review" > combined_review.md
-          echo "" >> combined_review.md
+          echo "## 🐢 Code Turtle Review" > combined_review.md
 
-          # 2. Iterate through diff chunks and send to Code Turtle
           for CHUNK in chunks/*; do
-            # Ensure we wrap the diff and prompt in a JSON object
-            jq -n \
-              --arg diff "$(cat "$CHUNK")" \
-              --arg prompt "$(cat prompt.txt)" \
-              '{diff: $diff, prompt: $prompt}' > payload.json
-
-            RESPONSE=$(curl -s -X POST "$API_URL/review" \
+            RESPONSE=$(curl -s -X POST "$API_URL" \
               -H "Content-Type: application/json" \
-              -d @payload.json)
+              -d "$(jq -n \
+                --arg diff "$(cat "$CHUNK")" \
+                --arg prompt "$(cat prompt.txt)" \
+                '{diff: $diff, prompt: $prompt}')")
 
-            # Extract the content. 
-            # Note: Adjust jq path based on your server.js response format.
-            # If server.js returns { message: "..." } or similar, update here.
-            # Assuming standard OpenAI format or direct text:
-            echo "$RESPONSE" | jq -r '.review // .choices[0].message.content // "⚠️ Review failed for this chunk."' >> combined_review.md
+            echo "$RESPONSE" | jq -r '.choices[0].message.content // "Review failed."' >> combined_review.md
             echo -e "\n---\n" >> combined_review.md
           done
 
-      - name: Post Comment on PR
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const fs = require('fs');
-            const reviewBody = fs.readFileSync('combined_review.md', 'utf8');
-            
-            if (reviewBody.trim().length === 0) return;
+      - name: Comment on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr comment ${{ github.event.pull_request.number }} --body "$(cat combined_review.md)"
 
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: reviewBody
-            });
-
-      - name: Add ai-reviewed label
-        uses: actions/github-script@v6
-        with:
-          script: |
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              labels: ['ai-reviewed']
-            });
+      - name: Add label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr edit ${{ github.event.pull_request.number }} --add-label "ai-reviewed"
 ```
+
+</details>
 
 ### 2. Configure Secrets
 

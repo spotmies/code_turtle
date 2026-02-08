@@ -57,7 +57,7 @@ jobs:
 
           Output format:
 
-          ## 🤖 Code Turtle Review
+          ## 🐢 Code Turtle Review
 
           ### 📌 Summary
           - Short bullet summary of overall findings
@@ -79,10 +79,10 @@ jobs:
           Keep it concise and developer-friendly.
           PROMPT
 
-          echo "## 🤖 Code Turtle Review" > combined_review.md
+          echo "## 🐢 Code Turtle Review" > combined_review.md
           echo "" >> combined_review.md
 
-          # NOTE: Replace 'https://your-code-turtle-instance.com/review' with your actual deployed URL
+          # Use the secret for your deployed Code Turtle instance URL
           API_URL="${{ secrets.CODE_TURTLE_URL }}/review"
 
           for CHUNK in chunks/*; do
@@ -93,14 +93,14 @@ jobs:
                 --arg prompt "$(cat prompt.txt)" \
                 '{diff: $diff, prompt: $prompt}')")
 
-            # Extract the review content. Adjust the jq path if your API response structure differs.
-            echo "$RESPONSE" | jq -r '.review // .choices[0].message.content // "Review generation failed for this chunk."' >> combined_review.md
+            # Extract the review content from Azure OpenAI response format
+            echo "$RESPONSE" | jq -r '.choices[0].message.content // "Review generation failed for this chunk."' >> combined_review.md
             echo -e "\n---\n" >> combined_review.md
           done
 
       - name: Comment AI review on PR
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BODY="$(cat combined_review.md)"
 
@@ -108,15 +108,12 @@ jobs:
             BODY="⚠️ AI review failed or returned empty response."
           fi
 
-          # Function to post comment using GitHub API
-          # We use a script here to handle potential JSON escaping issues with large bodies safely
-          
-          gh issue comment ${{ github.event.pull_request.number }} --body "$BODY"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use gh pr comment (not gh issue comment) for Pull Requests
+          gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
 
       - name: Add ai-reviewed label
-        run: |
-          gh issue edit ${{ github.event.pull_request.number }} --add-label "ai-reviewed"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Use gh pr edit (not gh issue edit) for Pull Requests
+          gh pr edit ${{ github.event.pull_request.number }} --add-label "ai-reviewed"
