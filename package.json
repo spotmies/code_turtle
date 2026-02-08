@@ -1,5 +1,5 @@
 {
-  "name": "azure-openai-proxy",
+  "name": "code-turtle",
   "version": "1.0.0",
   "type": "module",
   "main": "server.js",
