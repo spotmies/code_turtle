@@ -1,0 +1,122 @@
+name: Code Turtle AI Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  ai_review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout base repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+
+      - name: Fetch PR head
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          git fetch origin refs/pull/$PR_NUMBER/head:pr-head
+
+      - name: Generate PR diff
+        run: |
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          git diff "$BASE_SHA"...pr-head > diff.txt
+          wc -l diff.txt
+
+      - name: Chunk diff
+        run: |
+          mkdir -p chunks
+          split -l 400 diff.txt chunks/diff_
+
+      - name: Send chunks to Azure AI
+        run: |
+          cat <<'PROMPT' > prompt.txt
+          You are a senior software engineer acting as an automated code reviewer
+          similar to CodeRabbit.
+
+          Your goal:
+          - Help developers improve code quality
+          - Be precise, constructive, and actionable
+          - Avoid unnecessary criticism
+
+          Review rules:
+          - Focus on bugs, security, performance, and maintainability
+          - Ignore formatting-only or whitespace-only changes
+          - Reference filenames and approximate line numbers when possible
+          - Suggest fixes or alternatives, not just problems
+
+          Output MUST be valid GitHub-flavored Markdown.
+
+          Output format:
+
+          ## 🤖 Code Turtle Review
+
+          ### 📌 Summary
+          - Short bullet summary of overall findings
+
+          ---
+
+          ### 💬 Inline Comments (File-wise)
+          For each file:
+          #### `path/to/file.ext`
+          - **Line X**: Description of issue
+            - ✅ Suggestion: Concrete improvement
+
+          ---
+
+          ### ⚠️ High-Risk Issues
+          - List only serious issues (security, data loss, crashes)
+          - If none, say: "No high-risk issues found."
+
+          Keep it concise and developer-friendly.
+          PROMPT
+
+          echo "## 🤖 Code Turtle Review" > combined_review.md
+          echo "" >> combined_review.md
+
+          # NOTE: Replace 'https://your-code-turtle-instance.com/review' with your actual deployed URL
+          API_URL="${{ secrets.CODE_TURTLE_URL }}/review"
+
+          for CHUNK in chunks/*; do
+            RESPONSE=$(curl -s -X POST "$API_URL" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n \
+                --arg diff "$(cat "$CHUNK")" \
+                --arg prompt "$(cat prompt.txt)" \
+                '{diff: $diff, prompt: $prompt}')")
+
+            # Extract the review content. Adjust the jq path if your API response structure differs.
+            echo "$RESPONSE" | jq -r '.review // .choices[0].message.content // "Review generation failed for this chunk."' >> combined_review.md
+            echo -e "\n---\n" >> combined_review.md
+          done
+
+      - name: Comment AI review on PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BODY="$(cat combined_review.md)"
+
+          if [ -z "$BODY" ]; then
+            BODY="⚠️ AI review failed or returned empty response."
+          fi
+
+          # Function to post comment using GitHub API
+          # We use a script here to handle potential JSON escaping issues with large bodies safely
+          
+          gh issue comment ${{ github.event.pull_request.number }} --body "$BODY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add ai-reviewed label
+        run: |
+          gh issue edit ${{ github.event.pull_request.number }} --add-label "ai-reviewed"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
