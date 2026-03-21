@@ -194,4 +194,4 @@ It will analyze the diff, look for bugs and improvements, and post a consolidate
 
 ## 📄 License
 
-MIT
+MIT [open-source software license]
