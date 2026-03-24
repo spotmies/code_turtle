@@ -1,4 +1,4 @@
-name: Code Turtle AI Review
+name: CodeTurtle AI Code Review
 
 on:
   pull_request_target:
@@ -57,8 +57,6 @@ jobs:
 
           Output format:
 
-          ## 🐢 Code Turtle Review
-
           ### 📌 Summary
           - Short bullet summary of overall findings
 
@@ -79,28 +77,24 @@ jobs:
           Keep it concise and developer-friendly.
           PROMPT
 
-          echo "## 🐢 Code Turtle Review" > combined_review.md
+          echo "## Code Turtle Review 🐢" > combined_review.md
           echo "" >> combined_review.md
 
-          # Use the secret for your deployed Code Turtle instance URL
-          API_URL="${{ secrets.CODE_TURTLE_URL }}/review"
-
           for CHUNK in chunks/*; do
-            RESPONSE=$(curl -s -X POST "$API_URL" \
+            RESPONSE=$(curl -s -X POST https://coderabbit-production.up.railway.app/review \
               -H "Content-Type: application/json" \
               -d "$(jq -n \
                 --arg diff "$(cat "$CHUNK")" \
                 --arg prompt "$(cat prompt.txt)" \
                 '{diff: $diff, prompt: $prompt}')")
 
-            # Extract the review content from Azure OpenAI response format
-            echo "$RESPONSE" | jq -r '.choices[0].message.content // "Review generation failed for this chunk."' >> combined_review.md
+            echo "$RESPONSE" | jq -r '.review // .choices[0].message.content' >> combined_review.md
             echo -e "\n---\n" >> combined_review.md
           done
 
       - name: Comment AI review on PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BODY="$(cat combined_review.md)"
 
@@ -108,12 +102,18 @@ jobs:
             BODY="⚠️ AI review failed or returned empty response."
           fi
 
-          # Use gh pr comment (not gh issue comment) for Pull Requests
-          gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
+            -d "$(jq -n --arg body "$BODY" '{body: $body}')"
 
       - name: Add ai-reviewed label
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Use gh pr edit (not gh issue edit) for Pull Requests
-          gh pr edit ${{ github.event.pull_request.number }} --add-label "ai-reviewed"
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels \
+            -d '{"labels":["ai-reviewed"]}'
