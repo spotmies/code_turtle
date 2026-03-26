@@ -192,6 +192,4 @@ Once configured, **Code Turtle** will automatically run on:
 
 It will analyze the diff, look for bugs and improvements, and post a consolidated review as a comment on the PR.
 
-## 📄 License
-
-MIT
+## 📄 License testing code turtle
